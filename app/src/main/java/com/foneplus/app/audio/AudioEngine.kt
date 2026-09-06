@@ -13,7 +13,8 @@ import android.os.Build
 class AudioEngine(
     private val context: Context,
     private val shouldDuck: Boolean,
-    private val role: String
+    private val role: String,
+    private val sideDist: String // "L-R" ou "R-L"
 ) : AudioPipeline {
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var recorder: AudioRecord? = null
@@ -89,14 +90,31 @@ class AudioEngine(
         worker = Thread {
             val mono = ShortArray(320)
             val stereo = ShortArray(mono.size * 2)
+            
+            // Determina em qual canal a outra pessoa deve ouvir
+            // Se Driver está no L, Passenger está no R.
+            // Se eu sou Driver, eu mando áudio para o lado do Passenger.
+            // Se eu sou Passenger, eu mando áudio para o lado do Driver.
+            val targetIsLeft = if (role == "driver") {
+                sideDist == "R-L" // Se o Driver é R, o outro (P) é L.
+            } else {
+                sideDist == "L-R" // Se o Passenger é R, o outro (D) é L.
+            }
+
             try {
                 while (!Thread.currentThread().isInterrupted) {
                     val read = input.read(mono, 0, mono.size)
                     if (read <= 0) continue
                     for (index in 0 until read) {
                         val sample = mono[index]
-                        stereo[index * 2] = sample
-                        stereo[index * 2 + 1] = 0
+                        val offset = index * 2
+                        if (targetIsLeft) {
+                            stereo[offset] = sample
+                            stereo[offset + 1] = 0
+                        } else {
+                            stereo[offset] = 0
+                            stereo[offset + 1] = sample
+                        }
                     }
                     output.write(stereo, 0, read * 2)
                 }

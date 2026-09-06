@@ -2,9 +2,16 @@ package com.foneplus.app
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.provider.Settings
 import android.os.Bundle
 import android.util.Log
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -14,8 +21,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -30,15 +40,49 @@ import com.foneplus.app.ui.MainScreen
 import com.foneplus.app.ui.SetupScreen
 import com.foneplus.app.ui.SettingsScreen
 import com.foneplus.app.ui.bluetoothStatus
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
+    private var micTestJob: Job? = null
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             FoneplusTheme {
                 val channelTonePlayer = remember { ChannelTonePlayer(this@MainActivity) }
+                val scope = rememberCoroutineScope()
+                var micLevel by remember { mutableFloatStateOf(0f) }
+                var activeMicName by remember { mutableStateOf("") }
+                var availableMics by remember { mutableStateOf(emptyList<String>()) }
+                var selectedMicIndex by remember { mutableIntStateOf(0) }
+                var isMicTesting by remember { mutableStateOf(false) }
+                
+                val audioManager = remember { getSystemService(AudioManager::class.java) }
+                
+                // Atualiza lista de microfones periodicamente ou quando o teste inicia
+                fun refreshMics() {
+                    val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                    availableMics = inputs.map { 
+                        val type = when(it.type) {
+                            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BT-Call"
+                            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BT-Music"
+                            AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Onboard"
+                            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Cabo"
+                            else -> "Outro"
+                        }
+                        "[$type] ${it.productName}" 
+                    }.distinct()
+                }
+                
                 DisposableEffect(Unit) {
-                    onDispose { channelTonePlayer.stop() }
+                    onDispose { 
+                        channelTonePlayer.stop()
+                        stopMicTest()
+                    }
                 }
                 var setupComplete by remember {
                     mutableStateOf(
@@ -50,6 +94,10 @@ class MainActivity : ComponentActivity() {
                 val role = remember {
                     getSharedPreferences("foneplus", MODE_PRIVATE)
                         .getString("role", "driver") ?: "driver"
+                }
+                val sideDistribution = remember {
+                    getSharedPreferences("foneplus", MODE_PRIVATE)
+                        .getString("side_distribution", "L-R") ?: "L-R"
                 }
                 var keepRunning by remember {
                     mutableStateOf(
@@ -80,7 +128,7 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { granted ->
                     if (granted[Manifest.permission.RECORD_AUDIO] == true && pendingTalk) {
-                        startAudioService(role, duckingEnabled, handsFreeEnabled, speechSensitivity.toInt())
+                        startAudioService(role, sideDistribution, duckingEnabled, handsFreeEnabled, speechSensitivity.toInt())
                         isTalking = true
                     }
                     pendingTalk = false
@@ -109,11 +157,44 @@ class MainActivity : ComponentActivity() {
                                 Log.d("FoneplusUI", "Botão de teste de canal clicado: $channel")
                                 channelTonePlayer.play(channel)
                             },
-                            onComplete = { role ->
+                            onStopAudio = {
+                                channelTonePlayer.stop()
+                            },
+                            micLevel = micLevel,
+                            activeMicName = activeMicName,
+                            availableMics = availableMics,
+                            selectedMicIndex = selectedMicIndex,
+                            onMicSelected = { selectedMicIndex = it },
+                            isMicTesting = isMicTesting,
+                            onToggleMicTest = { testing ->
+                                if (testing) {
+                                    val permissions = arrayOf(Manifest.permission.RECORD_AUDIO)
+                                    requestPermissions.launch(permissions)
+                                    // O inicio real ocorre no callback de permissao ou 
+                                    // simplificamos iniciando direto se ja tiver
+                                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                        refreshMics()
+                                        isMicTesting = true
+                                        micTestJob = scope.launch(Dispatchers.IO) {
+                                            runMicTest(selectedMicIndex) { level, name -> 
+                                                micLevel = level 
+                                                activeMicName = name
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    isMicTesting = false
+                                    stopMicTest()
+                                    micLevel = 0f
+                                    activeMicName = ""
+                                }
+                            },
+                            onComplete = { selectedRole, selectedDist ->
                                 getSharedPreferences("foneplus", MODE_PRIVATE)
                                     .edit()
                                     .putBoolean("setup_complete", true)
-                                    .putString("role", role)
+                                    .putString("role", selectedRole)
+                                    .putString("side_distribution", selectedDist)
                                     .apply()
                                 setupComplete = true
                             }
@@ -175,10 +256,100 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startAudioService(role: String, shouldDuck: Boolean, handsFree: Boolean, speechThreshold: Int) {
+    private fun stopMicTest() {
+        micTestJob?.cancel()
+        micTestJob = null
+    }
+
+    private suspend fun runMicTest(targetIndex: Int, onLevel: (Float, String) -> Unit) {
+        val audioManager = getSystemService(AudioManager::class.java)
+        val sampleRate = 16_000
+        val bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (bufferSize <= 0) return
+        
+        val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        val targetDevice = if (targetIndex in inputs.indices) inputs[targetIndex] else null
+        
+        var debugInfo = targetDevice?.productName?.toString() ?: "Desconhecido"
+
+        // Se for Bluetooth, tenta ativar o SCO
+        if (targetDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+            try {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                @Suppress("DEPRECATION")
+                audioManager.startBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = true
+                delay(1000)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Erro ao ativar SCO", e)
+            }
+        }
+
+        try {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+            val record = AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
+
+            if (record.state != AudioRecord.STATE_INITIALIZED) return
+            
+            // Força o uso do dispositivo selecionado
+            if (targetDevice != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                record.setPreferredDevice(targetDevice)
+            }
+            
+            record.startRecording()
+            val buffer = ShortArray(bufferSize)
+            
+            while (micTestJob?.isActive == true) {
+                val read = record.read(buffer, 0, buffer.size)
+                if (read > 0) {
+                    var sum = 0.0
+                    for (i in 0 until read) {
+                        sum += buffer[i] * buffer[i]
+                    }
+                    val rms = sqrt(sum / read)
+                    val level = (rms / 5000.0).coerceIn(0.0, 1.0).toFloat()
+                    
+                    var activeName = debugInfo
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        record.routedDevice?.let { 
+                            activeName = "${if (it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) "FONE" else "CELULAR"}: ${it.productName}"
+                        }
+                    }
+                    
+                    onLevel(level, activeName)
+                }
+                delay(50)
+            }
+            record.stop()
+            record.release()
+        } finally {
+            if (targetDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                audioManager.mode = AudioManager.MODE_NORMAL
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = false
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            }
+        }
+    }
+
+    private fun startAudioService(role: String, sideDist: String, shouldDuck: Boolean, handsFree: Boolean, speechThreshold: Int) {
         val intent = Intent(this, FoneplusAudioService::class.java).apply {
             action = FoneplusAudioService.ACTION_START_TALK
             putExtra(FoneplusAudioService.EXTRA_ROLE, role)
+            putExtra(FoneplusAudioService.EXTRA_SIDE_DISTRIBUTION, sideDist)
             putExtra(FoneplusAudioService.EXTRA_DUCK, shouldDuck)
             putExtra(
                 FoneplusAudioService.EXTRA_MODE,
