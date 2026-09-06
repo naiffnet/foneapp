@@ -48,7 +48,9 @@ class FoneplusAudioService : Service() {
         when (intent?.action) {
             ACTION_START_TALK -> {
                 intentMode = intent.getStringExtra(EXTRA_MODE) ?: MODE_PTT
+                val role = intent.getStringExtra(EXTRA_ROLE) ?: "driver"
                 startTalking(
+                    role,
                     intent.getBooleanExtra(EXTRA_DUCK, true),
                     intent.getIntExtra(EXTRA_SPEECH_THRESHOLD, DEFAULT_SPEECH_THRESHOLD)
                 )
@@ -68,7 +70,7 @@ class FoneplusAudioService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startTalking(shouldDuck: Boolean, speechThreshold: Int) {
+    private fun startTalking(role: String, shouldDuck: Boolean, speechThreshold: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -79,12 +81,12 @@ class FoneplusAudioService : Service() {
             engine = if (intentMode == MODE_HANDS_FREE) {
                 HandsFreeAudioEngine(this, shouldDuck, speechThreshold)
             } else {
-                AudioEngine(this, shouldDuck)
+                AudioEngine(this, shouldDuck, role)
             }
         }
         val result = engine?.start()
         updateNotification(
-            if (result?.isSuccess == true) "Transmitindo pelo fone" else "Falha ao iniciar audio"
+            if (result?.isSuccess == true) "Transmitindo ($role)" else "Falha ao iniciar audio"
         )
     }
 
@@ -92,6 +94,7 @@ class FoneplusAudioService : Service() {
 
     private fun stopTalking() {
         engine?.stop()
+        engine = null
         updateNotification("Pronto para transmitir")
     }
 
@@ -126,6 +129,7 @@ class FoneplusAudioService : Service() {
         const val ACTION_STOP_SERVICE = "com.foneplus.app.action.STOP_SERVICE"
         const val EXTRA_DUCK = "extra_duck"
         const val EXTRA_MODE = "extra_mode"
+        const val EXTRA_ROLE = "extra_role"
         const val MODE_PTT = "ptt"
         const val MODE_HANDS_FREE = "hands_free"
         private const val CHANNEL_ID = "foneplus_audio"

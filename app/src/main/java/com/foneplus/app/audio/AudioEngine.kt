@@ -9,11 +9,11 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
-import kotlin.math.max
 
 class AudioEngine(
     private val context: Context,
-    private val shouldDuck: Boolean
+    private val shouldDuck: Boolean,
+    private val role: String
 ) : AudioPipeline {
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var recorder: AudioRecord? = null
@@ -35,8 +35,9 @@ class AudioEngine(
     }
 
     private fun startInternal() {
-
-        val sampleRate = 16_000
+        // Para Motorista (Driver), usamos 44.1kHz Estéreo para manter a qualidade e seletividade.
+        // Para Passageiro, usamos 16kHz que é o limite padrão do Bluetooth SCO.
+        val sampleRate = if (role == "driver") 44_100 else 16_000
         val inputFormat = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .setSampleRate(sampleRate)
@@ -47,39 +48,25 @@ class AudioEngine(
             .setSampleRate(sampleRate)
             .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
             .build()
-        val inputBuffer = max(
-            AudioRecord.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            ),
-            sampleRate / 2
-        )
-        val outputBuffer = max(
-            AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_STEREO,
-                AudioFormat.ENCODING_PCM_16BIT
-            ),
-            sampleRate
-        )
+        
+        val inputBuffer = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val outputBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
 
         val input = AudioRecord.Builder()
-            .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setAudioSource(if (role == "driver") MediaRecorder.AudioSource.MIC else MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setAudioFormat(inputFormat)
             .setBufferSizeInBytes(inputBuffer)
             .build()
-        // Sem isso, uma vez que configureCommunicationDevice() abaixo troca o
-        // dispositivo de comunicacao ativo para o Bluetooth SCO, o Android passa
-        // a capturar a fonte VOICE_COMMUNICATION a partir do microfone do fone,
-        // nao do celular — o oposto do que o modo PTT precisa (motorista falando
-        // pelo microfone do proprio aparelho).
-        selectBuiltInMic(input)
+        
+        if (role == "driver") {
+            selectBuiltInMic(input)
+        }
+
         val output = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .setUsage(if (role == "driver") AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(if (role == "driver") AudioAttributes.CONTENT_TYPE_MUSIC else AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
             .setAudioFormat(outputFormat)
@@ -87,7 +74,12 @@ class AudioEngine(
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
-        configureCommunicationDevice()
+        // Só ativamos o SCO (Bluetooth de chamada) se for o Passageiro,
+        // pois ele precisa do microfone do fone.
+        if (role == "passenger") {
+            configureCommunicationDevice()
+        }
+
         if (shouldDuck) requestAudioFocus()
         recorder = input
         player = output

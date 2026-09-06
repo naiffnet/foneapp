@@ -19,6 +19,9 @@ class HandsFreeAudioEngine(
     private val shouldDuck: Boolean,
     private val speechThreshold: Int
 ) : AudioPipeline {
+    // Nota: O modo mãos-livres ainda precisa ser atualizado para suportar o role
+    // e evitar SCO quando for Driver. Por enquanto, vamos apenas compatibilizar o construtor
+    // se for chamado, mas o foco está no PTT.
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var phoneRecord: AudioRecord? = null
     private var bluetoothRecord: AudioRecord? = null

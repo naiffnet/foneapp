@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.provider.Settings
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -79,7 +80,7 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { granted ->
                     if (granted[Manifest.permission.RECORD_AUDIO] == true && pendingTalk) {
-                        startAudioService(duckingEnabled, handsFreeEnabled, speechSensitivity.toInt())
+                        startAudioService(role, duckingEnabled, handsFreeEnabled, speechSensitivity.toInt())
                         isTalking = true
                     }
                     pendingTalk = false
@@ -105,6 +106,7 @@ class MainActivity : ComponentActivity() {
                                 startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
                             },
                             onPlayChannel = { channel ->
+                                Log.d("FoneplusUI", "Botão de teste de canal clicado: $channel")
                                 channelTonePlayer.play(channel)
                             },
                             onComplete = { role ->
@@ -173,9 +175,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startAudioService(shouldDuck: Boolean, handsFree: Boolean, speechThreshold: Int) {
+    private fun startAudioService(role: String, shouldDuck: Boolean, handsFree: Boolean, speechThreshold: Int) {
         val intent = Intent(this, FoneplusAudioService::class.java).apply {
             action = FoneplusAudioService.ACTION_START_TALK
+            putExtra(FoneplusAudioService.EXTRA_ROLE, role)
             putExtra(FoneplusAudioService.EXTRA_DUCK, shouldDuck)
             putExtra(
                 FoneplusAudioService.EXTRA_MODE,
