@@ -100,6 +100,10 @@ class AudioEngine(
             } else {
                 sideDist == "L-R" // Se o Passenger é R, o outro (D) é L.
             }
+            android.util.Log.d(
+                "AudioEngine",
+                "role=$role sideDist=$sideDist -> enviando audio para canal ${if (targetIsLeft) "ESQUERDO" else "DIREITO"}"
+            )
 
             try {
                 while (!Thread.currentThread().isInterrupted) {

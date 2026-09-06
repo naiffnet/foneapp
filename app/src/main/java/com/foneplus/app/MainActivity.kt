@@ -2,6 +2,7 @@ package com.foneplus.app
 
 import android.Manifest
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.provider.Settings
@@ -91,13 +92,17 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 var showSettings by remember { mutableStateOf(false) }
-                val role = remember {
-                    getSharedPreferences("foneplus", MODE_PRIVATE)
-                        .getString("role", "driver") ?: "driver"
+                var role by remember {
+                    mutableStateOf(
+                        getSharedPreferences("foneplus", MODE_PRIVATE)
+                            .getString("role", "driver") ?: "driver"
+                    )
                 }
-                val sideDistribution = remember {
-                    getSharedPreferences("foneplus", MODE_PRIVATE)
-                        .getString("side_distribution", "L-R") ?: "L-R"
+                var sideDistribution by remember {
+                    mutableStateOf(
+                        getSharedPreferences("foneplus", MODE_PRIVATE)
+                            .getString("side_distribution", "L-R") ?: "L-R"
+                    )
                 }
                 var keepRunning by remember {
                     mutableStateOf(
@@ -124,14 +129,31 @@ class MainActivity : ComponentActivity() {
                     ExperimentalAudioCapability.supportsLeAudio(this@MainActivity)
                 }
                 var pendingTalk by remember { mutableStateOf(false) }
+                var pendingMicTest by remember { mutableStateOf(false) }
+                fun beginMicTest() {
+                    refreshMics()
+                    isMicTesting = true
+                    micTestJob = scope.launch(Dispatchers.IO) {
+                        runMicTest(selectedMicIndex) { level, name ->
+                            micLevel = level
+                            activeMicName = name
+                        }
+                    }
+                }
                 val requestPermissions = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { granted ->
-                    if (granted[Manifest.permission.RECORD_AUDIO] == true && pendingTalk) {
-                        startAudioService(role, sideDistribution, duckingEnabled, handsFreeEnabled, speechSensitivity.toInt())
-                        isTalking = true
+                    if (granted[Manifest.permission.RECORD_AUDIO] == true) {
+                        if (pendingTalk) {
+                            startAudioService(role, sideDistribution, duckingEnabled, handsFreeEnabled, speechSensitivity.toInt())
+                            isTalking = true
+                        }
+                        if (pendingMicTest) {
+                            beginMicTest()
+                        }
                     }
                     pendingTalk = false
+                    pendingMicTest = false
                 }
 
                 LaunchedEffect(setupComplete) {
@@ -168,19 +190,11 @@ class MainActivity : ComponentActivity() {
                             isMicTesting = isMicTesting,
                             onToggleMicTest = { testing ->
                                 if (testing) {
-                                    val permissions = arrayOf(Manifest.permission.RECORD_AUDIO)
-                                    requestPermissions.launch(permissions)
-                                    // O inicio real ocorre no callback de permissao ou 
-                                    // simplificamos iniciando direto se ja tiver
                                     if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                        refreshMics()
-                                        isMicTesting = true
-                                        micTestJob = scope.launch(Dispatchers.IO) {
-                                            runMicTest(selectedMicIndex) { level, name -> 
-                                                micLevel = level 
-                                                activeMicName = name
-                                            }
-                                        }
+                                        beginMicTest()
+                                    } else {
+                                        pendingMicTest = true
+                                        requestPermissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
                                     }
                                 } else {
                                     isMicTesting = false
@@ -196,6 +210,8 @@ class MainActivity : ComponentActivity() {
                                     .putString("role", selectedRole)
                                     .putString("side_distribution", selectedDist)
                                     .apply()
+                                role = selectedRole
+                                sideDistribution = selectedDist
                                 setupComplete = true
                             }
                         )
@@ -256,6 +272,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private suspend fun waitForScoConnected(timeoutMs: Long) {
+        // audioManager.startBluetoothSco() e assincrono: o link de verdade so fica pronto
+        // quando o Android dispara ACTION_SCO_AUDIO_STATE_UPDATED com estado CONNECTED.
+        // Um delay fixo pode ser curto demais (silencio no teste) ou longo demais
+        // (demora sem necessidade). Aqui esperamos o evento real, com um teto de seguranca.
+        val connected = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { cont ->
+                val receiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: android.content.Context?, intent: Intent?) {
+                        val state = intent?.getIntExtra(
+                            AudioManager.EXTRA_SCO_AUDIO_STATE,
+                            AudioManager.SCO_AUDIO_STATE_ERROR
+                        )
+                        if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
+                            if (cont.isActive) cont.resume(true) {}
+                            try { unregisterReceiver(this) } catch (_: Exception) {}
+                        } else if (state == AudioManager.SCO_AUDIO_STATE_ERROR || state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
+                            if (cont.isActive) cont.resume(false) {}
+                            try { unregisterReceiver(this) } catch (_: Exception) {}
+                        }
+                    }
+                }
+                registerReceiver(receiver, IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED))
+                cont.invokeOnCancellation { try { unregisterReceiver(receiver) } catch (_: Exception) {} }
+            }
+        } ?: false
+        Log.d("MainActivity", "SCO conectado=$connected (aguardado via broadcast)")
+        if (!connected) {
+            // Fallback de seguranca: se o evento nunca chegou (alguns OEMs sao inconsistentes),
+            // damos uma folga extra antes de desistir e gravar mesmo assim.
+            delay(500)
+        }
+    }
+
     private fun stopMicTest() {
         micTestJob?.cancel()
         micTestJob = null
@@ -272,7 +322,7 @@ class MainActivity : ComponentActivity() {
         
         var debugInfo = targetDevice?.productName?.toString() ?: "Desconhecido"
 
-        // Se for Bluetooth, tenta ativar o SCO
+        // Se for Bluetooth, tenta ativar o SCO e espera a conexao real (nao um tempo fixo)
         if (targetDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
             try {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -280,7 +330,7 @@ class MainActivity : ComponentActivity() {
                 audioManager.startBluetoothSco()
                 @Suppress("DEPRECATION")
                 audioManager.isBluetoothScoOn = true
-                delay(1000)
+                waitForScoConnected(timeoutMs = 4000)
             } catch (e: Exception) {
                 Log.e("MainActivity", "Erro ao ativar SCO", e)
             }
