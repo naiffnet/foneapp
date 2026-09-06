@@ -14,7 +14,8 @@ class AudioEngine(
     private val context: Context,
     private val shouldDuck: Boolean,
     private val role: String,
-    private val sideDist: String // "L-R" ou "R-L"
+    private val sideDist: String, // "L-R" ou "R-L"
+    private val passengerMicId: String? = null
 ) : AudioPipeline {
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private var recorder: AudioRecord? = null
@@ -61,6 +62,8 @@ class AudioEngine(
         
         if (role == "driver") {
             selectBuiltInMic(input)
+        } else {
+            selectPassengerMic(input)
         }
 
         val output = AudioTrack.Builder()
@@ -156,6 +159,24 @@ class AudioEngine(
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
         if (device != null) {
             record.setPreferredDevice(device)
+        }
+    }
+
+    private fun selectPassengerMic(record: AudioRecord) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        // Se o usuario escolheu manualmente um microfone nas configuracoes,
+        // usamos exatamente esse dispositivo.
+        val chosen = MicOptions.findDevice(context, passengerMicId)
+        if (chosen != null) {
+            record.setPreferredDevice(chosen)
+            return
+        }
+        // Sem escolha manual (ou dispositivo salvo desconectado): mantem o
+        // comportamento automatico anterior, priorizando um microfone Bluetooth.
+        val fallback = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+        if (fallback != null) {
+            record.setPreferredDevice(fallback)
         }
     }
 

@@ -110,6 +110,20 @@ class MainActivity : ComponentActivity() {
                             .getBoolean("keep_running", true)
                     )
                 }
+                var passengerMicId by remember {
+                    mutableStateOf(
+                        getSharedPreferences("foneplus", MODE_PRIVATE)
+                            .getString("passenger_mic_id", null)
+                    )
+                }
+                var settingsMicOptions by remember {
+                    mutableStateOf(com.foneplus.app.audio.MicOptions.list(this@MainActivity))
+                }
+                LaunchedEffect(showSettings) {
+                    if (showSettings) {
+                        settingsMicOptions = com.foneplus.app.audio.MicOptions.list(this@MainActivity)
+                    }
+                }
                 var connectionStatus by remember { mutableStateOf(bluetoothStatus(this@MainActivity)) }
                 val lifecycleOwner = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner) {
@@ -145,7 +159,7 @@ class MainActivity : ComponentActivity() {
                 ) { granted ->
                     if (granted[Manifest.permission.RECORD_AUDIO] == true) {
                         if (pendingTalk) {
-                            startAudioService(role, sideDistribution, duckingEnabled, handsFreeEnabled, speechSensitivity.toInt())
+                            startAudioService(role, sideDistribution, duckingEnabled, handsFreeEnabled, speechSensitivity.toInt(), passengerMicId)
                             isTalking = true
                         }
                         if (pendingMicTest) {
@@ -233,7 +247,19 @@ class MainActivity : ComponentActivity() {
                                 showSettings = false
                                 setupComplete = false
                             },
-                            onBack = { showSettings = false }
+                            onBack = { showSettings = false },
+                            micOptions = settingsMicOptions,
+                            selectedPassengerMicId = passengerMicId,
+                            onSelectPassengerMic = { chosenId ->
+                                passengerMicId = chosenId
+                                getSharedPreferences("foneplus", MODE_PRIVATE)
+                                    .edit()
+                                    .putString("passenger_mic_id", chosenId)
+                                    .apply()
+                            },
+                            onRefreshMicOptions = {
+                                settingsMicOptions = com.foneplus.app.audio.MicOptions.list(this@MainActivity)
+                            }
                         )
                     } else {
                         MainScreen(
@@ -395,7 +421,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startAudioService(role: String, sideDist: String, shouldDuck: Boolean, handsFree: Boolean, speechThreshold: Int) {
+    private fun startAudioService(role: String, sideDist: String, shouldDuck: Boolean, handsFree: Boolean, speechThreshold: Int, passengerMicId: String?) {
         val intent = Intent(this, FoneplusAudioService::class.java).apply {
             action = FoneplusAudioService.ACTION_START_TALK
             putExtra(FoneplusAudioService.EXTRA_ROLE, role)
@@ -406,6 +432,7 @@ class MainActivity : ComponentActivity() {
                 if (handsFree) FoneplusAudioService.MODE_HANDS_FREE else FoneplusAudioService.MODE_PTT
             )
             putExtra(FoneplusAudioService.EXTRA_SPEECH_THRESHOLD, speechThreshold)
+            putExtra(FoneplusAudioService.EXTRA_PASSENGER_MIC_ID, passengerMicId)
         }
         ContextCompat.startForegroundService(this, intent)
     }

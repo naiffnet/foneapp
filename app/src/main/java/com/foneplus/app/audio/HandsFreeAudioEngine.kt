@@ -17,7 +17,8 @@ import kotlin.math.max
 class HandsFreeAudioEngine(
     private val context: Context,
     private val shouldDuck: Boolean,
-    private val speechThreshold: Int
+    private val speechThreshold: Int,
+    private val passengerMicId: String? = null
 ) : AudioPipeline {
     // Nota: O modo mãos-livres ainda precisa ser atualizado para suportar o role
     // e evitar SCO quando for Driver. Por enquanto, vamos apenas compatibilizar o construtor
@@ -73,7 +74,12 @@ class HandsFreeAudioEngine(
             .setBufferSizeInBytes(inputBuffer)
             .build()
         selectInputDevice(phone, AudioDeviceInfo.TYPE_BUILTIN_MIC)
-        selectInputDevice(bluetooth, AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+        val chosenPassengerMic = MicOptions.findDevice(context, passengerMicId)
+        if (chosenPassengerMic != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            bluetooth.setPreferredDevice(chosenPassengerMic)
+        } else {
+            selectInputDevice(bluetooth, AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+        }
         configureCommunicationDevice()
         focusController = AudioFocusController(context).also {
         }

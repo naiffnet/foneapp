@@ -50,11 +50,13 @@ class FoneplusAudioService : Service() {
                 intentMode = intent.getStringExtra(EXTRA_MODE) ?: MODE_PTT
                 val role = intent.getStringExtra(EXTRA_ROLE) ?: "driver"
                 val sideDist = intent.getStringExtra(EXTRA_SIDE_DISTRIBUTION) ?: "L-R"
+                val passengerMicId = intent.getStringExtra(EXTRA_PASSENGER_MIC_ID)
                 startTalking(
                     role,
                     sideDist,
                     intent.getBooleanExtra(EXTRA_DUCK, true),
-                    intent.getIntExtra(EXTRA_SPEECH_THRESHOLD, DEFAULT_SPEECH_THRESHOLD)
+                    intent.getIntExtra(EXTRA_SPEECH_THRESHOLD, DEFAULT_SPEECH_THRESHOLD),
+                    passengerMicId
                 )
             }
             ACTION_STOP_TALK -> stopTalking()
@@ -72,7 +74,7 @@ class FoneplusAudioService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startTalking(role: String, sideDist: String, shouldDuck: Boolean, speechThreshold: Int) {
+    private fun startTalking(role: String, sideDist: String, shouldDuck: Boolean, speechThreshold: Int, passengerMicId: String?) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -81,9 +83,9 @@ class FoneplusAudioService : Service() {
         }
         if (engine == null) {
             engine = if (intentMode == MODE_HANDS_FREE) {
-                HandsFreeAudioEngine(this, shouldDuck, speechThreshold)
+                HandsFreeAudioEngine(this, shouldDuck, speechThreshold, passengerMicId)
             } else {
-                AudioEngine(this, shouldDuck, role, sideDist)
+                AudioEngine(this, shouldDuck, role, sideDist, passengerMicId)
             }
         }
         val result = engine?.start()
@@ -133,6 +135,7 @@ class FoneplusAudioService : Service() {
         const val EXTRA_MODE = "extra_mode"
         const val EXTRA_ROLE = "extra_role"
         const val EXTRA_SIDE_DISTRIBUTION = "extra_side_distribution"
+        const val EXTRA_PASSENGER_MIC_ID = "extra_passenger_mic_id"
         const val MODE_PTT = "ptt"
         const val MODE_HANDS_FREE = "hands_free"
         private const val CHANNEL_ID = "foneplus_audio"
