@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
@@ -34,7 +35,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             FoneplusTheme {
-                val channelTonePlayer = remember { ChannelTonePlayer() }
+                val channelTonePlayer = remember { ChannelTonePlayer(this@MainActivity) }
                 DisposableEffect(Unit) {
                     onDispose { channelTonePlayer.stop() }
                 }
@@ -83,6 +84,20 @@ class MainActivity : ComponentActivity() {
                     }
                     pendingTalk = false
                 }
+
+                LaunchedEffect(setupComplete) {
+                    if (!setupComplete) {
+                        val permissions = buildList {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                add(Manifest.permission.BLUETOOTH_CONNECT)
+                            }
+                        }.toTypedArray()
+                        if (permissions.isNotEmpty()) {
+                            requestPermissions.launch(permissions)
+                        }
+                    }
+                }
+
                 Surface(modifier = Modifier.fillMaxSize()) {
                     if (!setupComplete) {
                         SetupScreen(

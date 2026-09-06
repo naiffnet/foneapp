@@ -8,14 +8,15 @@ import android.os.Build
 fun bluetoothStatus(context: Context): String {
     return try {
         val audioManager = context.getSystemService(AudioManager::class.java)
-        val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            audioManager.communicationDevice
-        } else {
-            null
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val btDevice = devices.firstOrNull { 
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || 
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
         }
+        
         when {
-            device?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Conectado: ${device.productName}"
-            audioManager.isBluetoothScoOn -> "Conectado via Bluetooth"
+            btDevice != null -> "Conectado: ${btDevice.productName.takeIf { it.isNotEmpty() } ?: "Fone Bluetooth"}"
             else -> "Fone Bluetooth não conectado"
         }
     } catch (_: SecurityException) {

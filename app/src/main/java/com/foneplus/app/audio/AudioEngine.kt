@@ -22,7 +22,7 @@ class AudioEngine(
     private var focusGranted = false
     private var focusRequest: android.media.AudioFocusRequest? = null
 
-    fun start(): Result<Unit> {
+    override fun start(): Result<Unit> {
         if (worker != null) return Result.success(Unit)
 
         return try {
@@ -69,6 +69,12 @@ class AudioEngine(
             .setAudioFormat(inputFormat)
             .setBufferSizeInBytes(inputBuffer)
             .build()
+        // Sem isso, uma vez que configureCommunicationDevice() abaixo troca o
+        // dispositivo de comunicacao ativo para o Bluetooth SCO, o Android passa
+        // a capturar a fonte VOICE_COMMUNICATION a partir do microfone do fone,
+        // nao do celular — o oposto do que o modo PTT precisa (motorista falando
+        // pelo microfone do proprio aparelho).
+        selectBuiltInMic(input)
         val output = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -112,7 +118,7 @@ class AudioEngine(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         worker?.interrupt()
         worker = null
         recorder?.release()
@@ -128,6 +134,15 @@ class AudioEngine(
             audioManager.isBluetoothScoOn = false
         }
         abandonAudioFocus()
+    }
+
+    private fun selectBuiltInMic(record: AudioRecord) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val device = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        if (device != null) {
+            record.setPreferredDevice(device)
+        }
     }
 
     private fun configureCommunicationDevice() {

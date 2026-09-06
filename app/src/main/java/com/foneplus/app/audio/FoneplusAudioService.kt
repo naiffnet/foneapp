@@ -15,7 +15,7 @@ import androidx.core.app.NotificationCompat
 import com.foneplus.app.R
 
 class FoneplusAudioService : Service() {
-    private var engine: AudioEngine? = null
+    private var engine: AudioPipeline? = null
     private val bluetoothReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: Intent?) {
             // Handle Bluetooth connection events
